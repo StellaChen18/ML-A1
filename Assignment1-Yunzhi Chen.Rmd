@@ -1,0 +1,335 @@
+---
+title: "ETC3250/5250 IML Asignment 1"
+author: Yunzhi Chen (32051018)
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r, message = FALSE, warning = FALSE}
+# Load the packages that you will use to complete this assignment.
+library(tidyverse)
+library(lubridate)
+library(GGally)
+library(rsample)
+library(broom)
+library(tidymodels)
+library(glmnet)
+set.seed(32051018)
+```
+
+\newpage
+
+## A. Preliminary analysis 
+
+*1. Load your downloaded data into R as a `tibble` object, ensuring each variable is encoded appropriately, and display the first 10 rows of your data set.* **(1 mark)**
+
+```{r}
+mydata <- read_csv(here::here("Assignment1/data32051018.csv")) %>%
+  as_tibble() %>%
+  mutate(open_date = as.Date(open_date, "%m/%d/%Y"))
+
+head(mydata, 10)
+```
+
+
+*2. Construct a new variable called `age` that corresponds to the age of the restaurant (in years) at 1st January, 2015. Show the histogram of this `age` variable.* **(1 mark)**
+
+```{r}
+mydata_age <- mydata %>%
+  mutate(age = as.Date("01/01/2015", "%m/%d/%Y") - open_date)
+
+mydata_age <- mydata_age %>%
+  mutate(age = round(time_length(age, unit = "year"), 2))
+
+mydata_age %>%
+  ggplot(aes(x = age)) +
+  geom_histogram(binwidth = 1, colour = "white")
+```
+
+*3. Produce a pair-wise scatter plot of each _numerical_ variable against the response. What do you notice from the plot? Make another plot for each of the numerical variable against the response that better shows the relationship between the two variables.* **(2 marks)**
+
+```{r}
+# Plot1
+mydata_num <- mydata_age %>%
+  select(
+    -open_date,
+    -type
+  )
+
+mydata_num %>%
+  pivot_longer(-revenue,
+    names_to = "factor",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(
+    x = value,
+    y = revenue
+  )) +
+  geom_point() +
+  facet_grid(. ~ factor, scales = "free_x")
+```
+
+As we can see from the above plot, there is no relationship between any of the numerical variables against the revenue, and there are many clusters among all variables.
+
+
+```{r}
+# Plot2
+GGally::ggpairs(mydata_num)
+```
+
+*4. Produce a numerical summary of all the variables in the data set.* **(1 mark)**
+
+```{r}
+summary(mydata_num)
+```
+
+*5. Using the preliminary exploration in questions 1 to 4, do you observe any patterns in the data? Should you use the variable `id` and `open_date` in your predictive model? Explain your answer.* **(2 marks)**
+
+The pair plot illustrates that P1, P5, and P6 are significantly correlated with revenue. Besides, it seems that there is no relationship between id/age and revenue. The revenue is bell-shaped, which indicates it is a normal distribution. I do not think I can involve the variable `id` and `open_date` in my predictive model, as those two variables are not significantly correlated with revenue.
+
+### B Regression
+
+*1. Remove the variables `id` and `open_date` from the data and select 70% of the observations to be used as the training data and the remaining data as the testing data.* **(1 mark)**
+
+```{r}
+restaurants <- mydata %>%
+  select(
+    -open_date,
+    -id
+  )
+
+restaurants_split <- initial_split(restaurants, prop = 0.7)
+restaurants_train <- training(restaurants_split)
+restaurants_test <- testing(restaurants_split)
+```
+
+
+*2. Use the training sample to estimate a multiple linear regression model for `revenue` in terms of all the predictors. Show the summary of this model fit. Discuss how well this model fits the data.* **(2 marks)**
+
+```{r}
+fit_all <- lm(revenue ~ .,
+  data = restaurants_train
+)
+
+summary(fit_all)
+
+glance(fit_all)
+```
+
+As R2 is 0.934, the model explains about almost all the variation in revenue. Which means, it is a strongly well-fitting model.
+
+*3. Consider a model for `revenue` with all predictors _except_ `type`. Show the summary of this model fit. Compare this model with the fitted model in question B2 using a hypothesis test. Explain the results of this test.* **(3 marks)**
+
+```{r}
+restaurants_train_notype <-
+  restaurants_train %>%
+  select(-type)
+
+fit_notype <- lm(revenue ~ .,
+  data = restaurants_train_notype
+)
+
+summary(fit_notype)
+
+anova(fit_notype, fit_all) #df can not be negative sign!! if it is just swap the models around in the argument.
+
+```
+As can be seen from the Analysis of Variance Table, some of the important columns are:
+
+- Df: represents the degrees of freedom in the model.
+- Sum Sq: represents the residual sum of squares.
+- F value: the value of the F statistic used to test for differences between the models.
+- Pr(>F): the p-value of the F statistic used to determine whether the differences between the models are significant.
+
+*4. Which of the two regression models considered (in questions B2 and B3) is best at predicting new records? Explain your answer.* **(2 marks)**
+
+From the output of the last question, we can get the conclusion that the first model is better than the second as it has a smaller residual sum of squares and a higher goodness of fit. The first model has 1389 degrees of freedom, and the sum of squared residuals is 6.0445e+14. The second model has 1391 degrees of freedom with a residual sum of squares of 6.0460e+14. The value of the F statistic is 0.1788 and the value of p is 0.8363, indicating that the difference between the two models is not significant.
+
+### C Subset selection 
+
+*1. Consider the model in question B2 as the full model. Perform a backward elimination using BIC. Report the final selected model using this process.* **(2 marks)**
+
+```{r}
+backward <- stats::step(fit_all,
+  scope = list(
+    lower = revenue ~ 1,
+    upper = formula(fit_all)
+  ),
+  direction = "backward",
+  k = log(nrow(restaurants_train))
+)
+```
+
+Through backward elimination using BIC, it can be concluded that the final selected model is having P1, P2, P3, P5, and P6 as predictors(revenue ~ P1 + P2 + P3 + P5 + P6) as this model has the lowest AIC value, which is AIC=37554.3.
+
+*2. Again consider the same model question B2 and perform now a step-wise regression using AIC. How is this model different to the one selected in question C1?* **(2 marks)**
+
+```{r}
+stepwise <- stats::step(fit_all,
+  scope = list(
+    lower = revenue ~ 1,
+    upper = formula(fit_all)
+  ),
+  direction = "both",
+  k = 2
+)
+```
+By using step-wise regression, the best model is revenue ~ P1 + P2 + P3 + P5 + P6, which has the AIC value to be 37522.84. There is no difference of the result that chosen by stepwise regression and backward regression. In fact, stepwise regression is a combination of both forward and backward selection, it can be more efficient in selecting variables. However, it can also be prone to overfitting the model. 
+
+
+### D Regularization 
+
+*1. Make an appropriate transformation to the training data for regularization methods. From this transformed training dataset, create a 5-fold cross validation dataset.*  **(2 marks)**
+
+```{r}
+# recipe
+restaurants_recipe <- recipe(revenue ~ .,
+  data = restaurants_train
+) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors()) %>%
+  step_log(all_outcomes(), base = 10) %>%
+  prep()
+
+restaurants_recipe
+
+# bake
+restaurants_train <- restaurants_recipe %>%
+  bake(new_data = NULL)
+
+restaurants_test <- restaurants_recipe %>%
+  bake(new_data = restaurants_test)
+
+# 5-fold cross validation
+restaurants_folds <- vfold_cv(restaurants_train, v = 5)
+```
+
+
+*2. Using the dataset from question D1, select the optimal tuning parameter $\lambda$ for lasso regression using the average root mean square error. You can use the search range for $\lambda$ to be $[1, 10^{10}]$ (or in code use ` 10^seq(0, 10, length = 50)`). You should _not_ use any convenience function like `cv.glmnet` to select $\lambda$.*   **(2 marks)**
+
+```{r , warning = FALSE, message = FALSE}
+select <- dplyr::select
+
+lambda_vec <- 10^seq(-10, 0, length = 50)
+
+cv_glmnet_to_restaurants <- function(alpha) {
+  restaurants_folds %>%
+    mutate(metrics = map(splits, function(.split) {
+      fold_train_data <- training(.split)
+      fold_fit <- glmnet(
+        x = fold_train_data %>%
+          select(-revenue),
+        y = fold_train_data$revenue,
+        alpha = alpha,
+        lambda = lambda_vec
+      )
+
+      fold_test_data <- testing(.split)
+
+      fold_preds <- fold_fit %>%
+        predict(as.matrix(select(fold_test_data, -revenue))) %>%
+        as.data.frame() %>%
+        add_column(revenue = fold_test_data$revenue) %>%
+        pivot_longer(-revenue, values_to = ".pred", names_to = "name") %>%
+        left_join(tibble(
+          name = paste0("s", 1:length(lambda_vec) - 1),
+          lambda = rev(lambda_vec)
+        ),
+        by = "name"
+        )
+
+      fold_preds %>%
+        group_by(name, lambda) %>%
+        metric_set(rmse, mae, mape)(., revenue, .pred) %>%
+        select(-.estimator) %>%
+        arrange(.metric, lambda)
+    })) %>%
+    unnest(metrics) %>%
+    group_by(name, .metric) %>%
+    summarise(
+      lambda = unique(lambda),
+      mean = mean(.estimate),
+      se = sd(.estimate)
+    )
+}
+
+restaurants_lasso_tuning <- cv_glmnet_to_restaurants(alpha = 1)
+
+restaurants_lasso_tuning_min <- restaurants_lasso_tuning %>%
+  group_by(.metric) %>%
+  filter(mean == min(mean))
+
+restaurants_lasso_tuning %>%
+  ggplot(aes(lambda, mean)) +
+  geom_errorbar(aes(
+    ymin = mean - se,
+    ymax = mean + se
+  )) +
+  geom_line() +
+  geom_point(
+    data = restaurants_lasso_tuning_min,
+    color = "red"
+  ) +
+  facet_wrap(~.metric, scale = "free_y") +
+  scale_x_log10()
+
+best_lambda_lasso <- restaurants_lasso_tuning_min$lambda[3]
+
+best_lambda_lasso
+```
+
+*3. Fit an elastic net model with optimal $\lambda$ and $\alpha$ selected by cross validation root mean square error using the dataset from question D2. Recall that $\alpha \in [0, 1]$ (in code you can use `seq(0, 1, length = 21)`). Remember that you need to find a combination of $\lambda$ and $\alpha$ that minimises the average root mean square error. Again don't use any convenience (i.e. one line) function. Discuss the results.* **(4 marks)**
+
+```{r, warning = FALSE, message = FALSE}
+select <- dplyr::select
+
+alpha_vec <- seq(0, 1, length = 21)
+results <- data.frame(
+  alpha = alpha_vec,
+  lambda = numeric(length(alpha_vec)),
+  mean = numeric(length(alpha_vec)),
+  se = numeric(length(alpha_vec))
+)
+
+for (alpha in alpha_vec) {
+  restaurants_elastic_tuning <- cv_glmnet_to_restaurants(alpha)
+
+  restaurants_elastic_tuning_min <- restaurants_elastic_tuning %>%
+    group_by(.metric) %>%
+    filter(mean == min(mean))
+
+
+  results$lambda[which(alpha_vec == alpha)] <- restaurants_elastic_tuning_min$lambda
+  results$mean[which(alpha_vec == alpha)] <- restaurants_elastic_tuning_min$mean
+  results$se[which(alpha_vec == alpha)] <- restaurants_elastic_tuning_min$se
+}
+
+best_lambda_alpha <- results %>%
+  filter(mean == min(mean))
+
+best_lambda_alpha
+```
+
+By calculation, we can see that when the alpha and lambda are `r best_lambda_alpha$alpha` and `r best_lambda_alpha$lambda` respectively, the combination results in the smallest rmse, which is `r best_lambda_alpha$mean`.
+
+## E. Conclusion 
+
+*1. What variables are important (or not important) in modelling the response? Explain your answer.*  **(2 marks)**
+
+From the previous analysis, it is clear that for the model, it is important to have the variables of P1, P2, P3, P5, P6 (obfuscated variables that are either demographic, real estate, or commercial information related to the restaurant). On the other hand, the id, type, and open_date are not important for the model.
+
+*2. What model would you recommend to TFI for predicting new records? Give statistical reasons for your recommendation.* **(2 marks)**
+```{r}
+best_fit <- glmnet(
+  x = restaurants_train %>%
+    select(-revenue),
+  y = restaurants_train$revenue,
+  alpha = 0.55,
+  lambda = 0.001389495
+)
+```
+
+To sum up, I think the best model is the elastic net model because this model combines lasso and ridge regression to take the best way to reduce the penalty, so that the model has the lowest rmse, thus the optimal model.
